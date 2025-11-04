@@ -1,0 +1,265 @@
+/* Custom CSS for MRIxAI Flask App */
+:root {
+    --maroon-color: #800000;
+    --light-maroon: #a52a2a;
+    --dark-maroon: #5a0000;
+    --blood-red: #8b0000;
+}
+
+/* Light theme variables */
+[data-bs-theme="light"] {
+    --bg-color: #f8f9fa;
+    --text-color: #212529;
+    --card-bg: #ffffff;
+    --border-color: #dee2e6;
+    --metric-bg: #ffffff;
+    --metric-text: var(--maroon-color);
+    --input-bg: #ffffff;
+    --input-border: #ced4da;
+    --sidebar-bg: #ffffff;
+    --header-text: #ffffff;
+}
+
+/* Dark theme variables */
+[data-bs-theme="dark"] {
+    --bg-color: #121212;
+    --text-color: #e0e0e0;
+    --card-bg: #1e1e1e;
+    --border-color: #444444;
+    --metric-bg: #2d2d2d;
+    --metric-text: #ff6b6b;
+    --input-bg: #2d2d2d;
+    --input-border: #555555;
+    --sidebar-bg: #1e1e1e;
+    --header-text: #e0e0e0;
+}
+
+body {
+    font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+}
+
+/* Header styling */
+.bg-maroon {
+    background-color: var(--maroon-color) !important;
+}
+
+.border-maroon {
+    border-color: var(--maroon-color) !important;
+}
+
+.btn-maroon {
+    background-color: var(--maroon-color);
+    border-color: var(--maroon-color);
+    color: var(--header-text);
+}
+
+.btn-maroon:hover {
+    background-color: var(--dark-maroon);
+    border-color: var(--dark-maroon);
+    color: var(--header-text);
+}
+
+/* Metric cards */
+.metric-card {
+    background-color: var(--metric-bg);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 15px;
+    text-align: center;
+    margin-bottom: 15px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.metric-value {
+    font-size: 1.5rem;
+    font-weight: bold;
+    color: var(--metric-text);
+}
+
+.metric-label {
+    font-size: 0.9rem;
+    color: var(--text-color);
+}
+
+[data-bs-theme="dark"] .metric-label {
+    color: #cccccc;
+}
+
+/* Form elements */
+.form-range::-webkit-slider-thumb {
+    background-color: var(--maroon-color);
+}
+
+.form-range::-moz-range-thumb {
+    background-color: var(--maroon-color);
+}
+
+.form-control {
+    background-color: var(--input-bg);
+    border-color: var(--input-border);
+    color: var(--text-color);
+}
+
+.form-control:focus {
+    background-color: var(--input-bg);
+    border-color: var(--maroon-color);
+    color: var(--text-color);
+    box-shadow: 0 0 0 0.25rem rgba(128, 0, 0, 0.25);
+}
+
+.form-control-color {
+    height: 40px;
+    background-color: var(--input-bg);
+}
+
+.form-check-input {
+    background-color: var(--input-bg);
+    border-color: var(--input-border);
+}
+
+.form-check-input:checked {
+    background-color: var(--maroon-color);
+    border-color: var(--maroon-color);
+}
+
+.form-check-label {
+    color: var(--text-color);
+}
+
+/* Tab styling */
+.nav-tabs .nav-link.active {
+    background-color: var(--maroon-color);
+    color: var(--header-text);
+    border-color: var(--maroon-color);
+}
+
+.nav-tabs .nav-link {
+    color: var(--maroon-color);
+    border: 1px solid var(--border-color);
+    background-color: var(--card-bg);
+}
+
+.nav-tabs .nav-link:hover {
+    border-color: var(--maroon-color);
+    background-color: var(--sidebar-bg);
+}
+
+/* Card styling */
+.card {
+    background-color: var(--card-bg);
+    border-color: var(--border-color);
+    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+}
+
+.card-header {
+    font-weight: bold;
+    color: var(--header-text);
+}
+
+/* Status messages */
+.alert-maroon {
+    background-color: var(--maroon-color);
+    color: var(--header-text);
+    border-color: var(--maroon-color);
+}
+
+.alert-warning {
+    background-color: #fff3cd;
+    border-color: #ffeaa7;
+    color: #856404;
+}
+
+[data-bs-theme="dark"] .alert-warning {
+    background-color: #332701;
+    border-color: #664d03;
+    color: #e0e0e0;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+    .container {
+        padding: 0 10px;
+    }
+    
+    .card-body {
+        padding: 1rem;
+    }
+    
+    .metric-card {
+        padding: 10px;
+    }
+    
+    .metric-value {
+        font-size: 1.2rem;
+    }
+}
+
+/* Plotly container */
+#plotly-3d-container {
+    width: 100%;
+    height: 500px;
+    border: 2px solid var(--border-color);
+    border-radius: 8px;
+    overflow: hidden;
+    margin: 1rem 0;
+    background: #000000; /* Always black for better 3D visualization */
+}
+
+/* Slice image */
+#sliceImage {
+    max-height: 400px;
+    border: 2px solid var(--border-color) !important;
+    border-radius: 8px;
+}
+
+/* Loading spinner */
+.spinner-border {
+    width: 1.5rem;
+    height: 1.5rem;
+    border-width: 0.15em;
+}
+
+/* Back to home button */
+.btn-light {
+    background-color: var(--input-bg);
+    border-color: var(--input-border);
+    color: var(--text-color);
+}
+
+.btn-light:hover {
+    background-color: var(--sidebar-bg);
+    border-color: var(--border-color);
+    color: var(--text-color);
+}
+
+/* Theme toggle button */
+#themeToggle {
+    background-color: var(--input-bg);
+    border-color: var(--input-border);
+    color: var(--text-color);
+}
+
+#themeToggle:hover {
+    background-color: var(--sidebar-bg);
+    border-color: var(--border-color);
+    color: var(--text-color);
+}
+
+/* Preformatted text in details */
+pre {
+    background-color: var(--metric-bg);
+    color: var(--text-color);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 10px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+}
+
+[data-bs-theme="dark"] pre {
+    background-color: #2d2d2d;
+    color: #e0e0e0;
+    border: 1px solid #444444;
+}
