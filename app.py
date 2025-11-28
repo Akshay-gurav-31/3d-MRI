@@ -1,19 +1,13 @@
 import os
-import sys
-import json
 import numpy as np
-from flask import Flask, render_template, request, jsonify, send_from_directory, Response, make_response
+from flask import Flask, render_template, request, jsonify, send_from_directory, Response
 from flask_cors import CORS
 import zipfile
-import nibabel as nib
 import tempfile
 from skimage import measure
-import plotly.graph_objects as go
 from scipy import ndimage
 import google.generativeai as genai
-import traceback
-from typing import Optional, Tuple, Any, Union, Dict, List
-from concurrent.futures import ThreadPoolExecutor
+from typing import Optional, Tuple, Dict, Any, List
 import warnings
 from dotenv import load_dotenv
 
@@ -28,24 +22,37 @@ try:
 except ImportError:
     cv2 = None
 
-# Type stub for nibabel to avoid linter errors
+# Optional nibabel import
 try:
     import nibabel as nib
-    from nibabel.nifti1 import Nifti1Image
-    from nibabel.filebasedimages import FileBasedImage
 except ImportError:
     nib = None
-    Nifti1Image = object
-    FileBasedImage = object
 
 # Configure Gemini API
-# You'll need to set the GOOGLE_API_KEY environment variable
-GOOGLE_API_KEY = os.getenv('GOOGLE_API_KEY')
-if GOOGLE_API_KEY:
-    genai.configure(api_key=GOOGLE_API_KEY)
-    model = genai.GenerativeModel('gemini-2.0-flash')
-else:
+DEFAULT_GOOGLE_API_KEY = "AIzaSyDb2YjTVzypfpvNKpYWQuauCWBXlF6qxXE"
+GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY") or DEFAULT_GOOGLE_API_KEY
+if not GOOGLE_API_KEY:
+    print("Warning: GOOGLE_API_KEY not found in environment variables")
     model = None
+else:
+    try:
+        genai.configure(api_key=GOOGLE_API_KEY)
+        # Update to use the correct model name
+        model = genai.GenerativeModel('gemini-pro')
+        
+        # Test the API key with a simple prompt
+        try:
+            test_response = model.generate_content("Test")
+            if not hasattr(test_response, 'text'):
+                print("Warning: API test failed - invalid response format")
+                model = None
+        except Exception as test_error:
+            print(f"Warning: API test failed - {str(test_error)}")
+            model = None
+            
+    except Exception as e:
+        print(f"Error configuring Gemini API: {str(e)}")
+        model = None
 
 # Get the absolute path to the app directory
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -58,24 +65,6 @@ try:
 except Exception as e:
     print(f"Error loading hypotheses: {str(e)}")
     hypotheses = ""
-
-# Custom error handling class
-class BrainAnalysisError(Exception):
-    """Custom exception for brain analysis errors"""
-    pass
-
-def process_slice(args):
-    """Process a single slice for parallel processing"""
-    slice_2d, clahe = args
-    try:
-        # Normalize to 0-255 range
-        slice_norm = ((slice_2d - np.min(slice_2d)) / (np.max(slice_2d) - np.min(slice_2d)) * 255).astype(np.uint8)
-        # Apply CLAHE
-        enhanced = clahe.apply(slice_norm)
-        # Convert back to float64 and normalize
-        return enhanced.astype(np.float64) / 255.0
-    except Exception:
-        return slice_2d
 
 def safe_load_volume(file_path: str) -> Tuple[Optional[np.ndarray], Optional[str]]:
     """Safely load volume data from file with proper type conversion"""
@@ -262,6 +251,7 @@ def safe_visualize_slice(slice_img: np.ndarray, mask_slice: Optional[np.ndarray]
                         contrast: float, brightness: float) -> Tuple[Optional[np.ndarray], Optional[str]]:
     """Safely visualize slice with mask overlay"""
     try:
+        # Apply contrast and brightness
         slice_img = (slice_img * contrast) + brightness
         slice_img = np.clip(slice_img, 0, 1)
         
@@ -271,64 +261,38 @@ def safe_visualize_slice(slice_img: np.ndarray, mask_slice: Optional[np.ndarray]
         if mask_slice is not None:
             # Check if mask_slice is valid
             if mask_slice.size == 0:
-                # Return grayscale image when mask is empty
                 return slice_uint8, None
                 
+            # Resize mask if needed
             if mask_slice.shape != slice_img.shape:
-                # Use resize function directly
                 mask_slice_uint8 = (mask_slice * 255).astype(np.uint8)
                 resize_func = getattr(cv2, 'resize', lambda x, y, interpolation: x) if cv2 else lambda x, y, interpolation: x
                 resized_mask = resize_func(mask_slice_uint8, 
                                         (slice_img.shape[1], slice_img.shape[0]), 
-                                        interpolation=0)  # 0 for INTER_NEAREST
+                                        interpolation=0)
                 mask_slice = resized_mask.astype(np.float64) / 255.0
             
-            # Convert mask to boolean (handle None case)
-            if mask_slice is not None:
-                mask_bool = mask_slice > 0.5
-            else:
-                mask_bool = np.zeros_like(slice_img, dtype=bool)
+            # Convert mask to boolean
+            mask_bool = mask_slice > 0.5
             
-            # Ensure slice is 3-channel for color operations
-            if len(slice_uint8.shape) == 2:
-                # Try to convert to RGB using OpenCV, fallback to numpy if needed
-                try:
-                    if cv2:
-                        colored_slice = cv2.cvtColor(slice_uint8, cv2.COLOR_GRAY2RGB)
-                    else:
-                        colored_slice = np.stack([slice_uint8]*3, axis=-1)
-                except Exception:
-                    # Fallback if OpenCV fails
-                    colored_slice = np.stack([slice_uint8]*3, axis=-1)
-            else:
-                colored_slice = slice_uint8.copy()
+            # Create RGB image
+            colored_slice = np.stack([slice_uint8]*3, axis=-1)
             
-            # Apply mask
+            # Create masked version
             masked_slice = colored_slice.copy()
-            # Ensure mask_bool is the right shape for indexing
-            if mask_bool.ndim == 2 and colored_slice.ndim == 3:
-                mask_3d = np.stack([mask_bool]*3, axis=-1)
-                masked_slice[mask_3d] = [255, 0, 0]
-            else:
-                # Handle case where both are 2D or both are 3D
-                masked_slice[mask_bool] = [255, 0, 0]
+            
+            # Apply red color to tumor regions
+            masked_slice[mask_bool] = [255, 0, 0]  # This line is fixed
             
             # Blend images
             alpha = 0.7
-            try:
-                if cv2:
-                    result = cv2.addWeighted(colored_slice, 1-alpha, masked_slice, alpha, 0)
-                else:
-                    # Simple blending using numpy as fallback
-                    result = (colored_slice * (1-alpha) + masked_slice * alpha).astype(np.uint8)
-            except Exception:
-                # Fallback if blending fails
-                result = colored_slice
+            result = (colored_slice * (1-alpha) + masked_slice * alpha).astype(np.uint8)
             
             return result, None
         else:
             # Return grayscale image when no mask
             return slice_uint8, None
+            
     except Exception as e:
         return None, f"Error in slice visualization: {str(e)}"
 
@@ -350,41 +314,106 @@ def safe_marching_cubes(data: np.ndarray, level: float) -> Tuple[Optional[Tuple]
     except Exception as e:
         return None, f"Error in marching cubes: {str(e)}"
 
+def load_normalized_volume(file_path: str) -> Tuple[Optional[np.ndarray], Optional[str]]:
+    """Utility that loads and normalizes a volume in one pass."""
+    volume, error = safe_load_volume(file_path)
+    if error:
+        return None, f"Error loading MRI: {error}"
+    if volume is None:
+        return None, "Failed to load volume data"
+
+    normalized, error = safe_normalize_volume(volume)
+    if error:
+        return None, f"Error processing MRI: {error}"
+    return normalized, None
+
+def segment_volume(volume: Optional[np.ndarray], threshold: float, min_size: int) -> Tuple[Optional[np.ndarray], Optional[str]]:
+    """Utility that runs segmentation with consistent error messages."""
+    if volume is None:
+        return None, "Failed to load volume data for segmentation"
+    predicted_mask, error = safe_segment_tumor(volume, threshold, min_size)
+    if error:
+        return None, f"Error in tumor detection: {error}"
+    return predicted_mask, None
+
+def compute_volume_metrics(volume: np.ndarray, predicted_mask: Optional[np.ndarray], include_bounds: bool = True) -> Dict[str, Any]:
+    """Compute reusable tumor metrics."""
+    tumor_volume = float(np.sum(predicted_mask)) if predicted_mask is not None else 0.0
+    total_volume = float(volume.size) if volume is not None else 0.0
+    tumor_percentage = (tumor_volume / total_volume * 100.0) if total_volume > 0 else 0.0
+
+    tumor_size: Optional[List[int]] = None
+    tumor_center: Optional[List[float]] = None
+    if predicted_mask is not None and np.any(predicted_mask):
+        tumor_mask_bool = predicted_mask.astype(bool)
+        tumor_coords = np.where(tumor_mask_bool)
+        adjustment = 1 if include_bounds else 0
+        tumor_size = [int(np.max(coord) - np.min(coord) + adjustment) for coord in tumor_coords]
+        tumor_center = [float(np.mean(coord)) for coord in tumor_coords]
+
+    return {
+        'tumor_volume': tumor_volume,
+        'total_volume': total_volume,
+        'tumor_percentage': tumor_percentage,
+        'tumor_size': tumor_size,
+        'tumor_center': tumor_center
+    }
+
+def error_response(message: str, status_code: int = 400) -> Response:
+    """Consistently format error responses."""
+    response = jsonify({'error': message})
+    response.status_code = status_code
+    return response
+
 def safe_generate_ai_summary(tumor_volume: float, tumor_percentage: float, 
                            total_volume: float, confidence_score: float) -> Tuple[Optional[str], Optional[str]]:
     """Safely generate AI summary with error handling"""
     try:
-        if not model:
-            return "AI model not configured. Please set the GOOGLE_API_KEY environment variable.", None
+        if not GOOGLE_API_KEY:
+            return "AI summary not available - API key not configured", None
             
-        prompt = f"""
-        Based on the following brain MRI analysis results, provide a concise medical summary:
-        - Tumor Volume: {tumor_volume:,.0f} voxels
-        - Tumor Percentage: {tumor_percentage:.2f}%
-        - Total Brain Volume: {total_volume:,.0f} voxels
-        - Detection Confidence: {confidence_score:.1f}%
+        if not model:
+            return ("AI model not initialized. Please check your API key and ensure it is valid.", None)
 
-        Please provide:
-        1. A brief interpretation of these results
-        2. Potential clinical significance
-        3. Recommended next steps
-        Keep the response professional and medical-focused.
-        """
-        
-        generation_config_dict = {
-            "temperature": 0.7,
-            "top_p": 0.8,
-            "top_k": 40,
-            "max_output_tokens": 1024,
-        }
-        
-        # Convert dict to GenerationConfig
-        generation_config = genai.types.GenerationConfig(**generation_config_dict)
-        
-        response = model.generate_content(prompt, generation_config=generation_config)
-        return response.text, None
+        try:
+            prompt = f"""
+            Based on the following brain MRI analysis results, provide a concise medical summary:
+            - Tumor Volume: {tumor_volume:,.0f} voxels
+            - Tumor Percentage: {tumor_percentage:.2f}%
+            - Total Brain Volume: {total_volume:,.0f} voxels
+            - Detection Confidence: {confidence_score:.1f}%
+
+            Please provide:
+            1. A brief interpretation of these results
+            2. Potential clinical significance
+            3. Recommended next steps
+            Keep the response professional and medical-focused.
+            """
+
+            generation_config = genai.types.GenerationConfig(
+                temperature=0.7,
+                top_p=0.8,
+                top_k=40,
+                max_output_tokens=1024,
+            )
+
+            # Add error handling for API call
+            try:
+                response = model.generate_content(prompt, generation_config=generation_config)
+                if hasattr(response, 'text'):
+                    return response.text, None
+                else:
+                    return "Unable to generate summary - invalid response format", None
+            except Exception as api_error:
+                if "403" in str(api_error):
+                    return "AI summary unavailable - API key error. Please contact administrator.", None
+                return f"Error calling AI API: {str(api_error)}", None
+
+        except Exception as generation_error:
+            return f"Error generating content: {str(generation_error)}", None
+
     except Exception as e:
-        return None, f"Error generating AI summary: {str(e)}"
+        return None, f"Error in summary generation: {str(e)}"
 
 # Flask app initialization
 app = Flask(__name__)
@@ -406,15 +435,11 @@ def upload_file() -> Response:
     """Handle file upload"""
     try:
         if 'file' not in request.files:
-            response = jsonify({'error': 'No file provided'})
-            response.status_code = 400
-            return response
+            return error_response('No file provided')
             
         file = request.files['file']
         if file.filename == '':
-            response = jsonify({'error': 'No file selected'})
-            response.status_code = 400
-            return response
+            return error_response('No file selected')
             
         if file:
             filename = file.filename
@@ -423,22 +448,9 @@ def upload_file() -> Response:
             file.save(file_path)
             
             # Process the uploaded file
-            volume, error = safe_load_volume(file_path)
+            _, error = load_normalized_volume(file_path)
             if error:
-                response = jsonify({'error': f"Error loading MRI: {error}"})
-                response.status_code = 400
-                return response
-            
-            if volume is not None:
-                volume, error = safe_normalize_volume(volume)
-                if error:
-                    response = jsonify({'error': f"Error processing MRI: {error}"})
-                    response.status_code = 400
-                    return response
-            else:
-                response = jsonify({'error': "Failed to load volume data"})
-                response.status_code = 400
-                return response
+                return error_response(error)
             
             # Return success response
             response = jsonify({
@@ -448,18 +460,10 @@ def upload_file() -> Response:
             response.status_code = 200
             return response
         # If file condition is not met (should not happen but for safety)
-        response = jsonify({'error': 'No file provided'})
-        response.status_code = 400
-        return response
+        return error_response('No file provided')
             
     except Exception as e:
-        response = jsonify({'error': f"Error uploading file: {str(e)}"})
-        response.status_code = 500
-        return response
-    # Default response in case of unexpected flow
-    response = jsonify({'error': 'Unexpected error'})
-    response.status_code = 500
-    return response
+        return error_response(f"Error uploading file: {str(e)}", 500)
 
 @app.route('/api/process', methods=['POST'])
 def process_mri() -> Response:
@@ -467,77 +471,38 @@ def process_mri() -> Response:
     try:
         data = request.get_json()
         if not data:
-            response = jsonify({'error': 'No JSON data provided'})
-            response.status_code = 400
-            return response
+            return error_response('No JSON data provided')
             
         file_path = data.get('file_path') if data else None
         threshold = float(data.get('threshold', 0.65)) if data else 0.65
         min_size = int(data.get('min_size', 100)) if data else 100
         
         if not file_path:
-            response = jsonify({'error': 'File path not provided'})
-            response.status_code = 400
-            return response
+            return error_response('File path not provided')
             
         if not os.path.exists(str(file_path)):
-            response = jsonify({'error': 'File not found'})
-            response.status_code = 400
-            return response
+            return error_response('File not found')
             
         # Load and process volume
-        volume, error = safe_load_volume(str(file_path))
+        volume, error = load_normalized_volume(str(file_path))
         if error:
-            response = jsonify({'error': f"Error loading MRI: {error}"})
-            response.status_code = 400
-            return response
-        
-        if volume is not None:
-            volume, error = safe_normalize_volume(volume)
-            if error:
-                response = jsonify({'error': f"Error processing MRI: {error}"})
-                response.status_code = 400
-                return response
-        else:
-            response = jsonify({'error': "Failed to load volume data"})
-            response.status_code = 400
-            return response
-        
-        # Segment tumor
-        if volume is not None:
-            predicted_mask, error = safe_segment_tumor(volume, threshold, min_size)
-            if error:
-                response = jsonify({'error': f"Error in tumor detection: {error}"})
-                response.status_code = 400
-                return response
-        else:
-            response = jsonify({'error': "Failed to load volume data for segmentation"})
-            response.status_code = 400
-            return response
-        
-        # Calculate metrics
-        tumor_volume = np.sum(predicted_mask) if predicted_mask is not None else 0
-        total_volume = volume.shape[0] * volume.shape[1] * volume.shape[2] if volume is not None else 0
-        tumor_percentage = (tumor_volume / total_volume) * 100 if total_volume > 0 else 0
-        
-        tumor_size = None
-        tumor_center = None
-        if tumor_volume > 0 and predicted_mask is not None:
-            tumor_mask_bool = predicted_mask.astype(bool)
-            tumor_coords = np.where(tumor_mask_bool)
-            if tumor_coords[0].size > 0:
-                tumor_size = [int(np.max(coord) - np.min(coord) + 1) for coord in tumor_coords]
-                tumor_center = [float(np.mean(coord)) for coord in tumor_coords]
+            return error_response(error)
+
+        predicted_mask, error = segment_volume(volume, threshold, min_size)
+        if error:
+            return error_response(error)
+
+        metrics = compute_volume_metrics(volume, predicted_mask, include_bounds=True)
         
         confidence_score = (1 - threshold) * 100
         
         # Return results
         response = jsonify({
-            'tumor_volume': float(tumor_volume),
-            'tumor_percentage': float(tumor_percentage),
-            'total_volume': float(total_volume),
-            'tumor_size': tumor_size,
-            'tumor_center': tumor_center,
+            'tumor_volume': float(metrics['tumor_volume']),
+            'tumor_percentage': float(metrics['tumor_percentage']),
+            'total_volume': float(metrics['total_volume']),
+            'tumor_size': metrics['tumor_size'],
+            'tumor_center': metrics['tumor_center'],
             'confidence_score': float(confidence_score),
             'predicted_mask': predicted_mask.tolist() if predicted_mask is not None else None,
             'volume_shape': [int(x) for x in volume.shape] if volume is not None else None
@@ -546,13 +511,7 @@ def process_mri() -> Response:
         return response
         
     except Exception as e:
-        response = jsonify({'error': f"Error processing MRI: {str(e)}"})
-        response.status_code = 500
-        return response
-    # Default response in case of unexpected flow
-    response = jsonify({'error': 'Unexpected error'})
-    response.status_code = 500
-    return response
+        return error_response(f"Error processing MRI: {str(e)}", 500)
 
 @app.route('/api/3d-visualization', methods=['POST'])
 def get_3d_visualization() -> Response:
@@ -560,9 +519,7 @@ def get_3d_visualization() -> Response:
     try:
         data = request.get_json()
         if not data:
-            response = jsonify({'error': 'No JSON data provided'})
-            response.status_code = 400
-            return response
+            return error_response('No JSON data provided')
             
         file_path = data.get('file_path') if data else None
         threshold = float(data.get('threshold', 0.65)) if data else 0.65
@@ -573,58 +530,29 @@ def get_3d_visualization() -> Response:
         tumor_color = data.get('tumor_color', '#FF0000') if data else '#FF0000'
         
         if not file_path:
-            response = jsonify({'error': 'File path not provided'})
-            response.status_code = 400
-            return response
+            return error_response('File path not provided')
             
         if not os.path.exists(str(file_path)):
-            response = jsonify({'error': 'File not found'})
-            response.status_code = 400
-            return response
+            return error_response('File not found')
             
         # Load and process volume
-        volume, error = safe_load_volume(str(file_path))
+        volume, error = load_normalized_volume(str(file_path))
         if error:
-            response = jsonify({'error': f"Error loading MRI: {error}"})
-            response.status_code = 400
-            return response
-        
-        if volume is not None:
-            volume, error = safe_normalize_volume(volume)
-            if error:
-                response = jsonify({'error': f"Error processing MRI: {error}"})
-                response.status_code = 400
-                return response
-        else:
-            response = jsonify({'error': "Failed to load volume data"})
-            response.status_code = 400
-            return response
-        
-        # Segment tumor
-        if volume is not None:
-            predicted_mask, error = safe_segment_tumor(volume, threshold, min_size)
-            if error:
-                response = jsonify({'error': f"Error in tumor detection: {error}"})
-                response.status_code = 400
-                return response
-        else:
-            response = jsonify({'error': "Failed to load volume data for segmentation"})
-            response.status_code = 400
-            return response
+            return error_response(error)
+
+        predicted_mask, error = segment_volume(volume, threshold, min_size)
+        if error:
+            return error_response(error)
         
         # Generate 3D data for brain
         brain_result, error = safe_marching_cubes(volume, 0.5)
         if error:
-            response = jsonify({'error': error})
-            response.status_code = 400
-            return response
+            return error_response(error)
         
         if brain_result is not None:
             verts, faces, _, _ = brain_result
         else:
-            response = jsonify({'error': "Failed to generate brain visualization"})
-            response.status_code = 400
-            return response
+            return error_response("Failed to generate brain visualization")
         
         # Prepare brain mesh data
         brain_data = {
@@ -665,21 +593,16 @@ def get_3d_visualization() -> Response:
         return response
         
     except Exception as e:
-        response = jsonify({'error': f"Error generating 3D visualization: {str(e)}"})
-        response.status_code = 500
-        return response
+        return error_response(f"Error generating 3D visualization: {str(e)}", 500)
 
 @app.route('/api/slice', methods=['POST'])
 def get_slice() -> Response:
     """Get a specific slice of the MRI"""
     try:
         data = request.get_json()
-        print(f"Slice endpoint received data: {data}")  # Debug line
         
         if not data:
-            response = jsonify({'error': 'No JSON data provided'})
-            response.status_code = 400
-            return response
+            return error_response('No JSON data provided')
             
         file_path = data.get('file_path') if data else None
         threshold = float(data.get('threshold', 0.65)) if data else 0.65
@@ -689,102 +612,60 @@ def get_slice() -> Response:
         brightness = float(data.get('brightness', 0.0)) if data else 0.0
         show_mask = data.get('show_mask', True) if data else True
         
-        print(f"Slice parameters: file_path={file_path}, threshold={threshold}, min_size={min_size}, slice_idx={slice_idx}, contrast={contrast}, brightness={brightness}, show_mask={show_mask}")  # Debug line
         
         if not file_path:
-            response = jsonify({'error': 'File path not provided'})
-            response.status_code = 400
-            return response
+            return error_response('File path not provided')
             
         if not os.path.exists(str(file_path)):
-            response = jsonify({'error': 'File not found'})
-            response.status_code = 400
-            return response
+            return error_response('File not found')
             
         # Load and process volume
-        volume, error = safe_load_volume(str(file_path))
+        volume, error = load_normalized_volume(str(file_path))
         if error:
-            response = jsonify({'error': f"Error loading MRI: {error}"})
-            response.status_code = 400
-            return response
+            return error_response(error)
         
-        if volume is not None:
-            volume, error = safe_normalize_volume(volume)
-            if error:
-                response = jsonify({'error': f"Error processing MRI: {error}"})
-                response.status_code = 400
-                return response
-        else:
-            response = jsonify({'error': "Failed to load volume data"})
-            response.status_code = 400
-            return response
-        
-        # Segment tumor
-        if volume is not None:
-            predicted_mask, error = safe_segment_tumor(volume, threshold, min_size)
-            if error:
-                response = jsonify({'error': f"Error in tumor detection: {error}"})
-                response.status_code = 400
-                return response
-        else:
-            response = jsonify({'error': "Failed to load volume data for segmentation"})
-            response.status_code = 400
-            return response
+        predicted_mask, error = segment_volume(volume, threshold, min_size)
+        if error:
+            return error_response(error)
         
         # Get slice
-        print(f"Getting slice: volume.shape={volume.shape if volume is not None else None}, slice_idx={slice_idx}")  # Debug line
         if volume is not None and slice_idx >= volume.shape[2]:
             slice_idx = volume.shape[2] - 1
-            print(f"Adjusted slice_idx to {slice_idx}")  # Debug line
             
         slice_img = volume[:, :, slice_idx] if volume is not None else np.array([])
-        print(f"slice_img.shape={slice_img.shape if slice_img is not None and hasattr(slice_img, 'shape') else 'N/A'}")  # Debug line
         mask_slice = None
         if predicted_mask is not None and show_mask and predicted_mask.shape[2] > slice_idx:
             mask_slice = predicted_mask[:, :, slice_idx]
-            print(f"mask_slice.shape={mask_slice.shape if mask_slice is not None and hasattr(mask_slice, 'shape') else 'N/A'}")  # Debug line
         
         # Visualize slice
         result = None
         error = None
         if slice_img is not None and slice_img.size > 0:
-            print("Calling safe_visualize_slice")  # Debug line
             result, error = safe_visualize_slice(slice_img, mask_slice, contrast, brightness)
-            print(f"safe_visualize_slice result: result={result is not None}, error={error}")  # Debug line
         else:
             error = "No slice data available"
-            print(f"No slice data available: slice_img is None or empty")  # Debug line
             
         if error and result is None:
-            print(f"Returning error: {error}")  # Debug line
-            response = jsonify({'error': error})
-            response.status_code = 400
-            return response
+            return error_response(error)
         
         # Convert image to base64 for transmission
-        print("Converting image to base64")  # Debug line
         import base64
         if result is not None and cv2 is not None:
             imencode_func = getattr(cv2, 'imencode', lambda x, y: (True, y))
             _, buffer = imencode_func('.png', result)
             img_str = base64.b64encode(buffer).decode()
-            print("Image encoded successfully")  # Debug line
         else:
             img_str = ""
-            print("No image to encode")  # Debug line
         
         response = jsonify({
             'image': img_str,
             'slice_idx': slice_idx
         })
-        print("Returning successful response")  # Debug line
         response.status_code = 200
         return response
         
     except Exception as e:
-        response = jsonify({'error': f"Error getting slice: {str(e)}"})
-        response.status_code = 500
-        return response
+        return error_response(f"Error getting slice: {str(e)}", 500)
 
 @app.route('/api/details', methods=['POST'])
 def get_details() -> Response:
@@ -792,58 +673,26 @@ def get_details() -> Response:
     try:
         data = request.get_json()
         if not data:
-            response = jsonify({'error': 'No JSON data provided'})
-            response.status_code = 400
-            return response
+            return error_response('No JSON data provided')
             
         file_path = data.get('file_path') if data else None
         threshold = float(data.get('threshold', 0.65)) if data else 0.65
         min_size = int(data.get('min_size', 100)) if data else 100
         
         if not file_path:
-            response = jsonify({'error': 'File path not provided'})
-            response.status_code = 400
-            return response
+            return error_response('File path not provided')
             
         if not os.path.exists(str(file_path)):
-            response = jsonify({'error': 'File not found'})
-            response.status_code = 400
-            return response
+            return error_response('File not found')
             
         # Load and process volume
-        volume, error = safe_load_volume(str(file_path))
+        volume, error = load_normalized_volume(str(file_path))
         if error:
-            response = jsonify({'error': f"Error loading MRI: {error}"})
-            response.status_code = 400
-            return response
+            return error_response(error)
         
-        if volume is not None:
-            volume, error = safe_normalize_volume(volume)
-            if error:
-                response = jsonify({'error': f"Error processing MRI: {error}"})
-                response.status_code = 400
-                return response
-        else:
-            response = jsonify({'error': "Failed to load volume data"})
-            response.status_code = 400
-            return response
-        
-        # Segment tumor
-        if volume is not None:
-            predicted_mask, error = safe_segment_tumor(volume, threshold, min_size)
-            if error:
-                response = jsonify({'error': f"Error in tumor detection: {error}"})
-                response.status_code = 400
-                return response
-        else:
-            response = jsonify({'error': "Failed to load volume data for segmentation"})
-            response.status_code = 400
-            return response
-        
-        # Calculate metrics
-        tumor_volume = np.sum(predicted_mask) if predicted_mask is not None else 0
-        total_volume = volume.shape[0] * volume.shape[1] * volume.shape[2] if volume is not None else 0
-        tumor_percentage = (tumor_volume / total_volume) * 100 if total_volume > 0 else 0
+        predicted_mask, error = segment_volume(volume, threshold, min_size)
+        if error:
+            return error_response(error)
         
         # Calculate statistics
         tumor_mask_bool = predicted_mask.astype(bool) if predicted_mask is not None else np.array([])
@@ -857,12 +706,7 @@ def get_details() -> Response:
             avg_intensity = float(np.mean(volume[tumor_mask_bool]))
             max_intensity = float(np.max(volume[tumor_mask_bool]))
         
-        tumor_size = None
-        tumor_center = None
-        if np.any(tumor_mask_bool):
-            tumor_coords = np.where(tumor_mask_bool)
-            tumor_size = [int(np.max(coord) - np.min(coord)) for coord in tumor_coords]
-            tumor_center = [float(np.mean(coord)) for coord in tumor_coords]
+        metrics = compute_volume_metrics(volume, predicted_mask, include_bounds=False)
         
         response = jsonify({
             'tumor_statistics': {
@@ -871,69 +715,54 @@ def get_details() -> Response:
                 'max_intensity': max_intensity
             },
             'volume_statistics': {
-                'total_volume': float(total_volume),
-                'tumor_volume': float(tumor_volume),
-                'tumor_percentage': float(tumor_percentage)
+                'total_volume': float(metrics['total_volume']),
+                'tumor_volume': float(metrics['tumor_volume']),
+                'tumor_percentage': float(metrics['tumor_percentage'])
             },
-            'tumor_dimensions': tumor_size,
-            'tumor_center': tumor_center,
+            'tumor_dimensions': metrics['tumor_size'],
+            'tumor_center': metrics['tumor_center'],
             'hypotheses': hypotheses
         })
         response.status_code = 200
         return response
         
     except Exception as e:
-        response = jsonify({'error': f"Error getting details: {str(e)}"})
-        response.status_code = 500
-        return response
+        return error_response(f"Error getting details: {str(e)}", 500)
 
 @app.route('/api/summary', methods=['POST'])
 def get_summary() -> Response:
     """Generate AI summary"""
     try:
         data = request.get_json()
-        print(f"Summary endpoint received data: {data}")  # Debug line
         
         if not data:
-            response = jsonify({'error': 'No JSON data provided'})
-            response.status_code = 400
-            return response
+            return error_response('No JSON data provided')
             
         tumor_volume = float(data.get('tumor_volume', 0)) if data else 0
         tumor_percentage = float(data.get('tumor_percentage', 0)) if data else 0
         total_volume = float(data.get('total_volume', 0)) if data else 0
         confidence_score = float(data.get('confidence_score', 0)) if data else 0
         
-        print(f"Summary parameters: tumor_volume={tumor_volume}, tumor_percentage={tumor_percentage}, total_volume={total_volume}, confidence_score={confidence_score}")  # Debug line
         
         # Generate AI summary
-        print("Calling safe_generate_ai_summary")  # Debug line
         summary, error = safe_generate_ai_summary(
             tumor_volume,
             tumor_percentage,
             total_volume,
             confidence_score
         )
-        print(f"safe_generate_ai_summary result: summary={summary is not None}, error={error}")  # Debug line
         
         if error:
-            print(f"Summary generation error: {error}")  # Debug line
-            response = jsonify({'error': error})
-            response.status_code = 400
-            return response
+            return error_response(error)
             
         response = jsonify({
             'summary': summary
         })
-        print("Returning successful summary response")  # Debug line
         response.status_code = 200
         return response
         
     except Exception as e:
-        print(f"Summary endpoint exception: {str(e)}")  # Debug line
-        response = jsonify({'error': f"Error generating summary: {str(e)}"})
-        response.status_code = 500
-        return response
+        return error_response(f"Error generating summary: {str(e)}", 500)
 
 @app.route('/static/<path:path>')
 def send_static(path) -> Response:
